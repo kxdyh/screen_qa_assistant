@@ -26,11 +26,30 @@ def build_provider(*, supports_vision: bool, enable_reasoning: bool = False) -> 
         api_key_ref=None,
         model="demo-model",
         supports_vision=supports_vision,
+        session_only=False,
         enable_reasoning=enable_reasoning,
         timeout_seconds=60,
         temperature=0.2,
         max_tokens=2048,
     )
+
+
+class FakeCredentialStore:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+        self.deleted: list[str] = []
+        self.set_calls: list[tuple[str, str]] = []
+
+    def get(self, ref: str) -> str | None:
+        return self.values.get(ref)
+
+    def set(self, ref: str, secret: str) -> None:
+        self.values[ref] = secret
+        self.set_calls.append((ref, secret))
+
+    def delete(self, ref: str) -> None:
+        self.values.pop(ref, None)
+        self.deleted.append(ref)
 
 
 def test_begin_capture_ignores_hotkey_while_overlay_is_active() -> None:
@@ -107,3 +126,74 @@ def test_app_controller_shutdown_hides_windows_and_disposes_hotkey() -> None:
     assert controller.overlay.isVisible() is False
     assert controller.settings_window.isVisible() is False
     assert controller.hotkey_widget.window_handle == 0
+
+
+def test_app_controller_save_settings_deletes_removed_provider_credentials() -> None:
+    app = ensure_app()
+    controller = AppController(app)
+    fake_store = FakeCredentialStore()
+    fake_store.values["provider-old"] = "secret-old"
+    controller.credential_store = fake_store  # type: ignore[assignment]
+    controller.settings_store.save = lambda settings: None  # type: ignore[method-assign]
+    controller.hotkey_widget.register_hotkey = lambda hotkey: True  # type: ignore[method-assign]
+    controller._tray.showMessage = lambda *args, **kwargs: None  # type: ignore[method-assign]
+    controller.settings = AppSettings(
+        default_provider_id="old",
+        hotkey="Ctrl+Q",
+        providers=[
+            ProviderProfile(
+                id="old",
+                name="Old",
+                base_url="https://example.com/v1",
+                api_key_ref="provider-old",
+                model="demo",
+                supports_vision=True,
+                session_only=False,
+                enable_reasoning=False,
+                timeout_seconds=60,
+                temperature=0.2,
+                max_tokens=2048,
+            )
+        ],
+    )
+    new_settings = AppSettings(hotkey="Ctrl+Q", providers=[])
+
+    controller._save_settings(new_settings, {})
+
+    assert "provider-old" in fake_store.deleted
+    controller.shutdown()
+
+
+def test_app_controller_session_only_provider_keeps_secret_in_memory() -> None:
+    app = ensure_app()
+    controller = AppController(app)
+    fake_store = FakeCredentialStore()
+    controller.credential_store = fake_store  # type: ignore[assignment]
+    controller.settings_store.save = lambda settings: None  # type: ignore[method-assign]
+    controller.hotkey_widget.register_hotkey = lambda hotkey: True  # type: ignore[method-assign]
+    controller._tray.showMessage = lambda *args, **kwargs: None  # type: ignore[method-assign]
+    provider = ProviderProfile(
+        id="session-provider",
+        name="Session",
+        base_url="https://example.com/v1",
+        api_key_ref="provider-session",
+        model="demo",
+        supports_vision=True,
+        session_only=True,
+        enable_reasoning=False,
+        timeout_seconds=60,
+        temperature=0.2,
+        max_tokens=2048,
+    )
+    settings = AppSettings(
+        default_provider_id=provider.id,
+        hotkey="Ctrl+Q",
+        providers=[provider],
+    )
+
+    controller._save_settings(settings, {"provider-session": "session-secret"})
+
+    assert fake_store.set_calls == []
+    assert controller._session_api_keys["provider-session"] == "session-secret"
+    assert controller._resolve_provider_api_key(provider) == "session-secret"
+    controller.shutdown()

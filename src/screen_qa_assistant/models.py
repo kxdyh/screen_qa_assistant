@@ -19,6 +19,7 @@ class ProviderProfile(BaseModel):
     api_key_ref: str | None = None
     model: str = Field(min_length=1)
     supports_vision: bool = True
+    session_only: bool = False
     enable_reasoning: bool = False
     timeout_seconds: int = Field(default=60, gt=0)
     temperature: float = Field(default=0.2, ge=0, le=2)
