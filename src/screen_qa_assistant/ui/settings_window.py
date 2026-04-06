@@ -200,6 +200,18 @@ class SettingsWindow(QDialog):
         self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         detail_layout.addRow("API Key", self.api_key_edit)
 
+        self.session_only_checkbox = QCheckBox("仅本次会话使用，不保存 API Key")
+        self.session_only_checkbox.setChecked(False)
+        self.session_only_checkbox.toggled.connect(self._update_api_key_security_hint)
+        detail_layout.addRow("", self.session_only_checkbox)
+
+        self.api_key_security_label = QLabel()
+        self.api_key_security_label.setWordWrap(True)
+        self.api_key_security_label.setStyleSheet(
+            f"color: {LIGHT_MUTED}; font-size: 11px; padding-left: 4px;"
+        )
+        detail_layout.addRow("", self.api_key_security_label)
+
         self.supports_vision_checkbox = QCheckBox("该模型支持视觉输入")
         self.supports_vision_checkbox.setChecked(True)
         detail_layout.addRow("", self.supports_vision_checkbox)
@@ -298,6 +310,7 @@ class SettingsWindow(QDialog):
         footer.addWidget(self.save_button)
 
         self._apply_compact_safe_metrics()
+        self._update_api_key_security_hint(self.session_only_checkbox.isChecked())
 
     def _apply_compact_safe_metrics(self) -> None:
         fixed_height_controls = [
@@ -312,6 +325,15 @@ class SettingsWindow(QDialog):
         for control in fixed_height_controls:
             control.setMinimumHeight(max(control.minimumHeight(), 44))
             control.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        for checkbox in (
+            self.supports_vision_checkbox,
+            self.session_only_checkbox,
+            self.reasoning_checkbox,
+            self.save_enabled_checkbox,
+        ):
+            checkbox.setMinimumHeight(28)
+            checkbox.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
         spin_controls = [
             self.timeout_spin,
@@ -343,13 +365,22 @@ class SettingsWindow(QDialog):
     def set_hotkey_validator(self, validator: Callable[[str], str | None]) -> None:
         self._hotkey_validator = validator
 
-    def load_settings(self, settings: AppSettings, credential_store: KeyringCredentialStore) -> None:
+    def load_settings(
+        self,
+        settings: AppSettings,
+        credential_store: KeyringCredentialStore,
+        session_api_keys: dict[str, str] | None = None,
+    ) -> None:
         self._providers = [provider.model_copy(deep=True) for provider in settings.providers]
         self._api_keys = {}
         self._active_provider_row = -1
+        session_api_keys = session_api_keys or {}
         for provider in self._providers:
             if provider.api_key_ref:
-                self._api_keys[provider.api_key_ref] = credential_store.get(provider.api_key_ref) or ""
+                self._api_keys[provider.api_key_ref] = session_api_keys.get(
+                    provider.api_key_ref,
+                    credential_store.get(provider.api_key_ref) or "",
+                )
 
         self.hotkey_recorder.set_sequence(settings.hotkey)
         self._set_hotkey_hint(self.hotkey_recorder.current_hint())
@@ -400,10 +431,12 @@ class SettingsWindow(QDialog):
         self.model_edit.clear()
         self.api_key_edit.clear()
         self.supports_vision_checkbox.setChecked(True)
+        self.session_only_checkbox.setChecked(False)
         self.reasoning_checkbox.setChecked(False)
         self.timeout_spin.setValue(60)
         self.temperature_spin.setValue(0.2)
         self.max_tokens_spin.setValue(2048)
+        self._update_api_key_security_hint(False)
 
     def _on_provider_selected(self, row: int) -> None:
         previous_row = self._active_provider_row
@@ -419,11 +452,13 @@ class SettingsWindow(QDialog):
         self.model_edit.setText(provider.model)
         self.api_key_edit.setText(self._api_keys.get(provider.api_key_ref or "", ""))
         self.supports_vision_checkbox.setChecked(provider.supports_vision)
+        self.session_only_checkbox.setChecked(provider.session_only)
         self.reasoning_checkbox.setChecked(provider.enable_reasoning)
         self.timeout_spin.setValue(provider.timeout_seconds)
         self.temperature_spin.setValue(provider.temperature)
         self.max_tokens_spin.setValue(provider.max_tokens)
         self._active_provider_row = row
+        self._update_api_key_security_hint(provider.session_only)
 
     def _build_provider_from_form(self, provider: ProviderProfile | None = None) -> ProviderProfile:
         existing = provider or ProviderProfile(
@@ -433,6 +468,7 @@ class SettingsWindow(QDialog):
             api_key_ref=None,
             model="gpt-4o-mini",
             supports_vision=True,
+            session_only=False,
             enable_reasoning=False,
             timeout_seconds=60,
             temperature=0.2,
@@ -447,6 +483,7 @@ class SettingsWindow(QDialog):
             api_key_ref=api_ref,
             model=self.model_edit.text().strip() or existing.model,
             supports_vision=self.supports_vision_checkbox.isChecked(),
+            session_only=self.session_only_checkbox.isChecked(),
             enable_reasoning=self.reasoning_checkbox.isChecked(),
             timeout_seconds=self.timeout_spin.value(),
             temperature=self.temperature_spin.value(),
@@ -471,6 +508,7 @@ class SettingsWindow(QDialog):
             api_key_ref=None,
             model="gpt-4o-mini",
             supports_vision=True,
+            session_only=False,
             enable_reasoning=False,
             timeout_seconds=60,
             temperature=0.2,
@@ -488,7 +526,7 @@ class SettingsWindow(QDialog):
         self._active_provider_row = -1
         provider = self._providers.pop(row)
         if provider.api_key_ref:
-            self._api_keys.setdefault(provider.api_key_ref, "")
+            self._api_keys.pop(provider.api_key_ref, None)
         self.provider_list.takeItem(row)
         self.default_provider_combo.removeItem(row)
         if self._providers:
@@ -508,6 +546,16 @@ class SettingsWindow(QDialog):
         directory = QFileDialog.getExistingDirectory(self, "选择截图保存目录", self.save_dir_edit.text() or str(Path.home()))
         if directory:
             self.save_dir_edit.setText(directory)
+
+    def _update_api_key_security_hint(self, session_only: bool) -> None:
+        if session_only:
+            self.api_key_security_label.setText(
+                "API Key 仅保存在当前会话内存中，关闭应用后失效，不写入项目目录。"
+            )
+        else:
+            self.api_key_security_label.setText(
+                "API Key 存储于 Windows Credential Manager，不写入项目目录。"
+            )
 
     def _emit_cleanup(self) -> None:
         directory = self.save_dir_edit.text().strip()

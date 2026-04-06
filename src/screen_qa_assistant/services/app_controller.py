@@ -35,6 +35,7 @@ class AppController(QObject):
             default_save_dir=str(get_default_capture_dir()),
         )
         self.credential_store = KeyringCredentialStore()
+        self._session_api_keys: dict[str, str] = {}
         self.settings = self.settings_store.load()
         self.client = OpenAICompatibleClient()
         self.session_manager = SessionManager()
@@ -165,7 +166,11 @@ class AppController(QObject):
         self.app.exit(0)
 
     def show_settings(self) -> None:
-        self.settings_window.load_settings(self.settings, self.credential_store)
+        self.settings_window.load_settings(
+            self.settings,
+            self.credential_store,
+            session_api_keys=self._session_api_keys,
+        )
         screen = QApplication.screenAt(QCursor.pos()) or self.app.primaryScreen()
         if screen is not None:
             self.settings_window.present_on_screen(screen.availableGeometry())
@@ -233,7 +238,7 @@ class AppController(QObject):
         return str(path)
 
     def _start_request(self, provider: ProviderProfile, request: VisionRequest) -> None:
-        api_key = self.credential_store.get(provider.api_key_ref) if provider.api_key_ref else None
+        api_key = self._resolve_provider_api_key(provider)
         self._current_response_buffer = ""
         self.session_manager.mark_streaming()
         worker = StreamWorker(self.client, provider, request, api_key)
@@ -349,14 +354,37 @@ class AppController(QObject):
             )
             return
 
+        previous_refs = {
+            provider.api_key_ref
+            for provider in self.settings.providers
+            if provider.api_key_ref
+        }
+        current_refs = {
+            provider.api_key_ref
+            for provider in settings.providers
+            if provider.api_key_ref
+        }
+        removed_refs = previous_refs - current_refs
+        for ref in removed_refs:
+            self.credential_store.delete(ref)
+            self._session_api_keys.pop(ref, None)
+
         self.settings = settings
         for provider in settings.providers:
             if provider.api_key_ref:
                 secret = api_keys.get(provider.api_key_ref, "").strip()
-                if secret:
-                    self.credential_store.set(provider.api_key_ref, secret)
-                else:
+                if provider.session_only:
                     self.credential_store.delete(provider.api_key_ref)
+                    if secret:
+                        self._session_api_keys[provider.api_key_ref] = secret
+                    else:
+                        self._session_api_keys.pop(provider.api_key_ref, None)
+                else:
+                    self._session_api_keys.pop(provider.api_key_ref, None)
+                    if secret:
+                        self.credential_store.set(provider.api_key_ref, secret)
+                    else:
+                        self.credential_store.delete(provider.api_key_ref)
         self.settings_store.save(settings)
         self.answer_window.hide()
         self.answer_window = AnswerWindow(self.settings.window_prefs.get("answer_window", {}))
@@ -390,3 +418,11 @@ class AppController(QObject):
         if ok:
             return None
         return message
+
+    def _resolve_provider_api_key(self, provider: ProviderProfile) -> str | None:
+        if not provider.api_key_ref:
+            return None
+        session_secret = self._session_api_keys.get(provider.api_key_ref)
+        if session_secret:
+            return session_secret
+        return self.credential_store.get(provider.api_key_ref)
