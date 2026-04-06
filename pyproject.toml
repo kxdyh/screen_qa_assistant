@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "screen-qa-assistant"
+version = "0.1.0"
+description = "Windows screenshot-to-AI Q&A desktop assistant"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.10"
+dependencies = [
+    "PySide6>=6.7,<7",
+    "httpx>=0.28,<1",
+    "mss>=10,<11",
+    "keyring>=25,<26",
+    "pydantic>=2.12,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0,<9",
+]
+build = [
+    "pyinstaller>=6.19,<7",
+]
+
+[project.scripts]
+screen-qa-assistant = "screen_qa_assistant.main:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
